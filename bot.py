@@ -4,38 +4,51 @@ import sys
 import requests
 import pandas as pd
 from datetime import datetime
+from collections import defaultdict
 import pytz
 
 BASE_URL = "https://mauforonda.github.io/precios"
 BOLIVIA_TZ = pytz.timezone("America/La_Paz")
 
+CATEGORIA_EMOJI = {
+    "Frutas y Verduras":        "🥬",
+    "Granos y Hortalizas":      "🌾",
+    "Carnes":                   "🥩",
+    "Fiambres":                 "🥓",
+    "Lácteos y Derivados":      "🥛",
+    "Congelados":               "🧊",
+    "Bebidas":                  "🥤",
+    "Abarrotes":                "🛒",
+    "Panadería":                "🍞",
+    "Pastelería y Masas Típicas": "🍰",
+    "Aseo Personal":            "🧼",
+    "Aseo Del Hogar":           "🧹",
+    "Aseo Del Bebé":            "🍼",
+    "Cuidado Personal":         "💆",
+    "Cuidado del Hogar":        "🏠",
+    "Cuidado del Bebé":         "👶",
+    "Farmacia Otc":             "💊",
+    "Farmacia Éticos":          "💊",
+    "Bazar":                    "🛍️",
+    "Bazar Importación":        "📦",
+    "Juguetería":               "🧸",
+    "Juguetería Importación":   "🧸",
+}
+
 
 def get_hashed_urls(html: str) -> tuple[str, str]:
-    cbba_match = re.search(r'registerFile\("./data/cochabamba\.csv",\s*"(\._file/data/cochabamba\.[a-f0-9]+\.csv)"', html)
-    prod_match = re.search(r'registerFile\("./data/productos\.json",\s*"(\._file/data/productos\.[a-f0-9]+\.json)"', html)
-
-    if not cbba_match:
-        # Try alternate pattern without leading dot
-        cbba_match = re.search(r'_file/data/cochabamba\.([a-f0-9]+)\.csv', html)
-        prod_match = re.search(r'_file/data/productos\.([a-f0-9]+)\.json', html)
-        if not cbba_match or not prod_match:
-            raise ValueError("No se encontraron las URLs hasheadas en el HTML del sitio")
-        cbba_url = f"{BASE_URL}/_file/data/cochabamba.{cbba_match.group(1)}.csv"
-        prod_url = f"{BASE_URL}/_file/data/productos.{prod_match.group(1)}.json"
-    else:
-        cbba_url = BASE_URL + cbba_match.group(1).lstrip(".")
-        prod_url = BASE_URL + prod_match.group(1).lstrip(".")
-
+    cbba_match = re.search(r'_file/data/cochabamba\.([a-f0-9]+)\.csv', html)
+    prod_match = re.search(r'_file/data/productos\.([a-f0-9]+)\.json', html)
+    if not cbba_match or not prod_match:
+        raise ValueError("No se encontraron las URLs hasheadas en el HTML del sitio")
+    cbba_url = f"{BASE_URL}/_file/data/cochabamba.{cbba_match.group(1)}.csv"
+    prod_url = f"{BASE_URL}/_file/data/productos.{prod_match.group(1)}.json"
     return cbba_url, prod_url
 
 
 def send_telegram(token: str, chat_id: str, message: str) -> None:
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "HTML",
-    }
+    payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
     resp = requests.post(url, json=payload, timeout=10)
     resp.raise_for_status()
 
@@ -48,63 +61,80 @@ def main():
         print("ERROR: Faltan variables TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID")
         sys.exit(1)
 
-    # 1. Obtener HTML y extraer URLs hasheadas
+    # 1. Obtener URLs hasheadas del HTML
     print("Obteniendo URLs del sitio...")
     html_resp = requests.get(BASE_URL + "/", timeout=15)
     html_resp.raise_for_status()
     cbba_url, prod_url = get_hashed_urls(html_resp.text)
-    print(f"CSV Cochabamba: {cbba_url}")
-    print(f"JSON productos: {prod_url}")
 
     # 2. Descargar datos
     print("Descargando datos...")
     df = pd.read_csv(cbba_url)
     productos = requests.get(prod_url, timeout=15).json()
 
-    # productos es un dict {id: {"producto": "...", "categoria": "...", ...}}
+    # Mapeo id → {nombre, categoria}
     if isinstance(productos, list):
-        prod_map = {str(p["id_producto"]): p["producto"] for p in productos if "id_producto" in p}
+        prod_info = {
+            str(p["id_producto"]): {"nombre": p.get("producto", "?"), "categoria": p.get("categoria", "Otros")}
+            for p in productos if "id_producto" in p
+        }
     else:
-        prod_map = {str(k): v["producto"] if isinstance(v, dict) else v for k, v in productos.items()}
+        prod_info = {
+            str(k): {"nombre": v.get("producto", "?") if isinstance(v, dict) else v,
+                     "categoria": v.get("categoria", "Otros") if isinstance(v, dict) else "Otros"}
+            for k, v in productos.items()
+        }
 
-    # 3. Filtrar productos con baja de precio (1_cambio < 0)
+    # 3. Filtrar bajas de precio
     if "1_cambio" not in df.columns:
-        print(f"Columnas disponibles: {list(df.columns)}")
-        raise ValueError("Columna '1_cambio' no encontrada en el CSV")
+        raise ValueError(f"Columna '1_cambio' no encontrada. Columnas: {list(df.columns)}")
 
     bajas = df[df["1_cambio"] < 0].copy()
-    bajas = bajas.sort_values("1_cambio")  # mayor baja primero
+    bajas = bajas.sort_values("1_cambio")
 
     if bajas.empty:
         print("No hubo bajas de precio hoy. No se envía mensaje.")
         return
 
-    # 4. Formatear mensaje
-    today = datetime.now(BOLIVIA_TZ).strftime("%d/%m/%Y")
-    lineas = []
+    # 4. Agrupar por categoría
+    por_categoria = defaultdict(list)
     for _, row in bajas.iterrows():
-        nombre = prod_map.get(str(int(row["id_producto"])), f"Producto #{int(row['id_producto'])}")
-        precio_hoy = row["hoy"]
-        precio_ayer = row["1"]
-        cambio_pct = row["1_cambio"] * 100  # viene como fracción (ej. -0.12 = -12%)
+        pid = str(int(row["id_producto"]))
+        info = prod_info.get(pid, {"nombre": f"Producto #{pid}", "categoria": "Otros"})
+        por_categoria[info["categoria"]].append({
+            "nombre": info["nombre"],
+            "hoy": row["hoy"],
+            "cambio_pct": row["1_cambio"] * 100,
+        })
 
-        lineas.append(
-            f"🔻 <b>{nombre}</b>  Bs {precio_hoy:.2f} "
-            f"<i>(ayer Bs {precio_ayer:.2f}, {cambio_pct:+.1f}%)</i>"
-        )
+    # 5. Formatear mensaje
+    today = datetime.now(BOLIVIA_TZ).strftime("%d/%m/%Y")
+    bloques = []
+    for cat in sorted(por_categoria.keys()):
+        emoji = CATEGORIA_EMOJI.get(cat, "📦")
+        header = f"{emoji} <b>{cat}</b>"
+        items = []
+        for p in por_categoria[cat]:
+            items.append(f"  {p['nombre']}  <b>Bs {p['hoy']:.2f}</b>  <i>({p['cambio_pct']:+.0f}%)</i>")
+        bloques.append(header + "\n" + "\n".join(items))
 
-    encabezado = f"📉 <b>Bajas de precio · Cochabamba · {today}</b>\n"
+    encabezado = f"📉 <b>Bajas de precio · Cochabamba · {today}</b>"
     pie = f"\n<i>{len(bajas)} producto{'s' if len(bajas) != 1 else ''} bajaron · HiperMaxi</i>"
-    mensaje = encabezado + "\n" + "\n".join(lineas) + pie
+    mensaje = encabezado + "\n\n" + "\n\n".join(bloques) + pie
 
-    # Telegram tiene límite de 4096 caracteres
+    # Límite de Telegram: 4096 caracteres
     if len(mensaje) > 4000:
-        lineas = lineas[:40]
-        pie = f"\n<i>{len(bajas)} productos bajaron (mostrando 40) · HiperMaxi</i>"
-        mensaje = encabezado + "\n" + "\n".join(lineas) + pie
+        bloques_recortados = []
+        total = len(encabezado) + len(pie) + 10
+        for bloque in bloques:
+            if total + len(bloque) > 4000:
+                break
+            bloques_recortados.append(bloque)
+            total += len(bloque) + 2
+        mensaje = encabezado + "\n\n" + "\n\n".join(bloques_recortados) + pie
 
-    # 5. Enviar
-    print(f"Enviando mensaje con {len(bajas)} productos...")
+    # 6. Enviar
+    print(f"Enviando mensaje con {len(bajas)} productos en {len(por_categoria)} categorías...")
     send_telegram(token, chat_id, mensaje)
     print("Mensaje enviado correctamente.")
 
