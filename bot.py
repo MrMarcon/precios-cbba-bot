@@ -104,6 +104,7 @@ def main():
         por_categoria[info["categoria"]].append({
             "nombre": info["nombre"],
             "hoy": row["hoy"],
+            "ayer": row["1"],
             "cambio_pct": row["1_cambio"] * 100,
         })
 
@@ -115,7 +116,7 @@ def main():
         header = f"{emoji} <b>{cat}</b>"
         items = []
         for p in por_categoria[cat]:
-            items.append(f"  {p['nombre']}  <b>Bs {p['hoy']:.2f}</b>  <i>({p['cambio_pct']:+.0f}%)</i>")
+            items.append(f"  {p['nombre']}  <b>Bs {p['hoy']:.2f}</b>  <i>(antes Bs {p['ayer']:.2f}, {p['cambio_pct']:+.0f}%)</i>")
         bloques.append(header + "\n" + "\n".join(items))
 
     encabezado = f"📉 <b>Bajas de precio · Cochabamba · {today}</b>"
