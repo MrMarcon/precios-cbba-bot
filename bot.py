@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import unicodedata
 import requests
 import pandas as pd
 from datetime import datetime
@@ -9,6 +10,34 @@ import pytz
 
 BASE_URL = "https://mauforonda.github.io/precios"
 BOLIVIA_TZ = pytz.timezone("America/La_Paz")
+
+# Productos que compro frecuentemente — keywords para matchear contra los nombres del CSV
+MIS_PRODUCTOS = [
+    "arroz grano de oro",
+    "leche deslactosada",
+    "yogurt griego",
+    "tomate pera",
+    "carne molida",
+    "bollo grande",
+    "colgate",
+    "herbal te verde",
+    "bollo chispi",
+    "mozzarella",
+    "mayonesa kris",
+    "jamon sandwichero",
+    "azucar blanca",
+    "cebolla roja",
+    "camote",
+    "yuca",
+    "pan casero",
+    "pan francesito",
+    "pepino",
+]
+
+
+def _norm(s: str) -> str:
+    """Normaliza a minúsculas sin tildes para comparación robusta."""
+    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii").lower()
 
 CATEGORIA_EMOJI = {
     "Frutas y Verduras":        "🥬",
@@ -96,17 +125,23 @@ def main():
         print("No hubo bajas de precio hoy. No se envía mensaje.")
         return
 
-    # 4. Agrupar por categoría
+    # 4. Agrupar por categoría + detectar mis productos
     por_categoria = defaultdict(list)
+    mis_bajas = []
+    keywords = [_norm(kw) for kw in MIS_PRODUCTOS]
     for _, row in bajas.iterrows():
         pid = str(int(row["id_producto"]))
         info = prod_info.get(pid, {"nombre": f"Producto #{pid}", "categoria": "Otros"})
-        por_categoria[info["categoria"]].append({
+        producto = {
             "nombre": info["nombre"],
             "hoy": row["hoy"],
             "ayer": row["1"],
             "cambio_pct": row["1_cambio"] * 100,
-        })
+        }
+        por_categoria[info["categoria"]].append(producto)
+        if any(kw in _norm(info["nombre"]) for kw in keywords):
+            mis_bajas.append(producto)
+    mis_bajas.sort(key=lambda x: x["cambio_pct"])
 
     # 5. Formatear mensaje
     today = datetime.now(BOLIVIA_TZ).strftime("%d/%m/%Y")
@@ -119,9 +154,17 @@ def main():
             items.append(f"  {p['nombre']}  <b>Bs {p['hoy']:.2f}</b>  <i>(antes Bs {p['ayer']:.2f}, {p['cambio_pct']:+.0f}%)</i>")
         bloques.append(header + "\n" + "\n".join(items))
 
+    seccion_mis = ""
+    if mis_bajas:
+        items_mis = [
+            f"  {p['nombre']}  <b>Bs {p['hoy']:.2f}</b>  <i>(antes Bs {p['ayer']:.2f}, {p['cambio_pct']:+.0f}%)</i>"
+            for p in mis_bajas
+        ]
+        seccion_mis = "🛒 <b>Quizás te interese...</b>\n" + "\n".join(items_mis) + "\n\n"
+
     encabezado = f"📉 <b>Bajas de precio · Cochabamba · {today}</b>"
     pie = f"\n<i>{len(bajas)} producto{'s' if len(bajas) != 1 else ''} bajaron · HiperMaxi</i>"
-    mensaje = encabezado + "\n\n" + "\n\n".join(bloques) + pie
+    mensaje = seccion_mis + encabezado + "\n\n" + "\n\n".join(bloques) + pie
 
     # Límite de Telegram: 4096 caracteres
     if len(mensaje) > 4000:
