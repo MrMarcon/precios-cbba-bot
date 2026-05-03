@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+
+import pytest
+
 from smart_order.matcher import CatalogProduct, match_items, parse_product_fields
 
 
@@ -44,3 +48,14 @@ def test_parse_product_fields_leaves_unbranded_produce_without_brand():
 
     assert marca is None
     assert tamano == "1 kg"
+
+
+def test_cart_smoke_navigation_is_optional():
+    if os.environ.get("RUN_CART_SMOKE") != "1":
+        pytest.skip("RUN_CART_SMOKE no esta activo")
+
+    from smart_order.cart import verify_site_navigation
+
+    result = verify_site_navigation(user_data_dir="playwright-profile/test-smoke", headless=True)
+
+    assert result.cart_url.startswith("http")
