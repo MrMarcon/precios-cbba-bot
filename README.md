@@ -14,7 +14,7 @@ Bot de Telegram para alertas diarias de bajas de precio de Hipermaxi y flujo int
 - `TELEGRAM_BOT_TOKEN` o `TELEGRAM_TOKEN`
 - `TELEGRAM_CHAT_ID`
 - `ANTHROPIC_API_KEY`
-- `ANTHROPIC_MODEL`, opcional; default `claude-sonnet-4-5`
+- `ANTHROPIC_MODEL`, opcional; default `claude-sonnet-4-6`
 - `HIPERMAXI_URL`, opcional; default `https://www.hipermaxi.com/`
 - `PLAYWRIGHT_USER_DATA_DIR`, opcional; default `playwright-profile`
 

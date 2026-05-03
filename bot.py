@@ -262,8 +262,11 @@ async def build_cart_from_session(query: Any, session: SmartOrderSession) -> Non
     try:
         from smart_order.cart import build_cart
 
-        user_data_dir = os.environ.get("PLAYWRIGHT_USER_DATA_DIR", "playwright-profile")
-        result = await asyncio.to_thread(build_cart, selected_products, user_data_dir=user_data_dir, headless=False)
+        is_server = bool(os.environ.get("RENDER_EXTERNAL_URL"))
+        default_dir = "/tmp/playwright-profile" if is_server else "playwright-profile"
+        user_data_dir = os.environ.get("PLAYWRIGHT_USER_DATA_DIR", default_dir)
+        headless = os.environ.get("CART_HEADLESS", "true" if is_server else "false").lower() == "true"
+        result = await asyncio.to_thread(build_cart, selected_products, user_data_dir=user_data_dir, headless=headless)
     except Exception as exc:
         await query.message.reply_text(f"No pude armar el carrito: {str(exc)}")
         return
@@ -347,8 +350,21 @@ def run_smart_order_bot() -> None:
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(CallbackQueryHandler(handle_smart_order_callback, pattern=r"^so\|"))
 
-    print("Smart Order escuchando fotos por polling...")
-    application.run_polling()
+    render_url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
+    port = int(os.environ.get("PORT", 8443))
+
+    if render_url:
+        webhook_url = f"{render_url}/webhook"
+        print(f"Smart Order iniciando con webhook: {webhook_url}")
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path="webhook",
+            webhook_url=webhook_url,
+        )
+    else:
+        print("Smart Order escuchando fotos por polling...")
+        application.run_polling()
 
 
 def main():

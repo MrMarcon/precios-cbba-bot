@@ -6,7 +6,7 @@ import os
 import re
 from typing import Any
 
-DEFAULT_MODEL = "claude-sonnet-4-5"
+DEFAULT_MODEL = "claude-sonnet-4-6"
 SUPPORTED_MEDIA_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 
 OCR_PROMPT = """Extrae los items de esta lista de compras manuscrita.
