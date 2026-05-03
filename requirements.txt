@@ -1,7 +1,7 @@
 pandas
 requests
 pytz
-python-telegram-bot
+python-telegram-bot[webhooks]
 anthropic
 rapidfuzz
 playwright
