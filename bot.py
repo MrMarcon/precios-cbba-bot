@@ -1,13 +1,12 @@
 import os
-import re
 import sys
 import requests
-import pandas as pd
 from datetime import datetime
 from collections import defaultdict
 import pytz
 
-BASE_URL = "https://mauforonda.github.io/precios"
+from smart_order.matcher import fetch_catalog_sources
+
 BOLIVIA_TZ = pytz.timezone("America/La_Paz")
 
 CATEGORIA_EMOJI = {
@@ -36,16 +35,6 @@ CATEGORIA_EMOJI = {
 }
 
 
-def get_hashed_urls(html: str) -> tuple[str, str]:
-    cbba_match = re.search(r'_file/data/cochabamba\.([a-f0-9]+)\.csv', html)
-    prod_match = re.search(r'_file/data/productos\.([a-f0-9]+)\.json', html)
-    if not cbba_match or not prod_match:
-        raise ValueError("No se encontraron las URLs hasheadas en el HTML del sitio")
-    cbba_url = f"{BASE_URL}/_file/data/cochabamba.{cbba_match.group(1)}.csv"
-    prod_url = f"{BASE_URL}/_file/data/productos.{prod_match.group(1)}.json"
-    return cbba_url, prod_url
-
-
 def send_telegram(token: str, chat_id: str, message: str) -> None:
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
@@ -61,29 +50,8 @@ def main():
         print("ERROR: Faltan variables TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID")
         sys.exit(1)
 
-    # 1. Obtener URLs hasheadas del HTML
-    print("Obteniendo URLs del sitio...")
-    html_resp = requests.get(BASE_URL + "/", timeout=15)
-    html_resp.raise_for_status()
-    cbba_url, prod_url = get_hashed_urls(html_resp.text)
-
-    # 2. Descargar datos
     print("Descargando datos...")
-    df = pd.read_csv(cbba_url)
-    productos = requests.get(prod_url, timeout=15).json()
-
-    # Mapeo id → {nombre, categoria}
-    if isinstance(productos, list):
-        prod_info = {
-            str(p["id_producto"]): {"nombre": p.get("producto", "?"), "categoria": p.get("categoria", "Otros")}
-            for p in productos if "id_producto" in p
-        }
-    else:
-        prod_info = {
-            str(k): {"nombre": v.get("producto", "?") if isinstance(v, dict) else v,
-                     "categoria": v.get("categoria", "Otros") if isinstance(v, dict) else "Otros"}
-            for k, v in productos.items()
-        }
+    df, prod_info = fetch_catalog_sources(city="cochabamba")
 
     # 3. Filtrar bajas de precio
     if "1_cambio" not in df.columns:
