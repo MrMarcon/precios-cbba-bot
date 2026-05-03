@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import base64
 import os
+from types import SimpleNamespace
 
 import pytest
 
 from smart_order.matcher import CatalogProduct, match_items, parse_product_fields
+from smart_order.ocr import extract_items_from_image, parse_items_json
+
+TINY_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+)
 
 
 def test_match_items_returns_best_three_matches():
@@ -50,6 +57,23 @@ def test_parse_product_fields_leaves_unbranded_produce_without_brand():
     assert tamano == "1 kg"
 
 
+def test_ocr_extracts_items_from_hardcoded_image_with_mocked_claude():
+    fake_messages = FakeMessages()
+    fake_client = SimpleNamespace(messages=fake_messages)
+
+    items = extract_items_from_image(TINY_PNG, "image/png", client=fake_client, model="test-model")
+
+    assert items == ["leche descremada", "pan molde", "tomate"]
+    request = fake_messages.last_request
+    assert request["model"] == "test-model"
+    assert request["messages"][0]["content"][0]["source"]["media_type"] == "image/png"
+    assert request["messages"][0]["content"][0]["source"]["data"] == base64.b64encode(TINY_PNG).decode("ascii")
+
+
+def test_ocr_parser_accepts_json_inside_code_fence():
+    assert parse_items_json('```json\n{"items": ["atun", "arroz"]}\n```') == ["atun", "arroz"]
+
+
 def test_cart_smoke_navigation_is_optional():
     if os.environ.get("RUN_CART_SMOKE") != "1":
         pytest.skip("RUN_CART_SMOKE no esta activo")
@@ -59,3 +83,16 @@ def test_cart_smoke_navigation_is_optional():
     result = verify_site_navigation(user_data_dir="playwright-profile/test-smoke", headless=True)
 
     assert result.cart_url.startswith("http")
+
+
+class FakeMessages:
+    def __init__(self):
+        self.last_request = None
+
+    def create(self, **kwargs):
+        self.last_request = kwargs
+        return SimpleNamespace(
+            content=[
+                SimpleNamespace(text='{"items": ["leche descremada", "pan molde", "tomate"]}')
+            ]
+        )
