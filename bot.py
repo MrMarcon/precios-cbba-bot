@@ -367,6 +367,41 @@ def run_smart_order_bot() -> None:
         application.run_polling()
 
 
+def format_bloques(por_categoria: dict) -> list[str]:
+    bloques = []
+    for cat in sorted(por_categoria.keys()):
+        emoji = CATEGORIA_EMOJI.get(cat, "📦")
+        header = f"{emoji} <b>{cat}</b>"
+        items = []
+        for p in por_categoria[cat]:
+            items.append(
+                f"  {p['nombre']}  <b>Bs {p['hoy']:.2f}</b>"
+                f"  <i>(antes Bs {p['ayer']:.2f}, {p['cambio_pct']:+.0f}%)</i>"
+            )
+        bloques.append(header + "\n" + "\n".join(items))
+    return bloques
+
+
+def split_messages(encabezado: str, bloques: list[str], pie: str, max_chars: int = 4000) -> list[str]:
+    mensajes: list[str] = []
+    current_parts: list[str] = [encabezado]
+    current_len = len(encabezado)
+
+    for bloque in bloques:
+        needed = len(bloque) + 2  # \n\n separator
+        if current_len + needed + len(pie) > max_chars and len(current_parts) > 1:
+            mensajes.append("\n\n".join(current_parts))
+            current_parts = []
+            current_len = 0
+        current_parts.append(bloque)
+        current_len += needed
+
+    if current_parts:
+        mensajes.append("\n\n".join(current_parts) + pie)
+
+    return mensajes if mensajes else [encabezado + pie]
+
+
 def main():
     token = get_telegram_token()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -403,34 +438,50 @@ def main():
 
     # 5. Formatear mensaje
     today = datetime.now(BOLIVIA_TZ).strftime("%d/%m/%Y")
-    bloques = []
-    for cat in sorted(por_categoria.keys()):
-        emoji = CATEGORIA_EMOJI.get(cat, "📦")
-        header = f"{emoji} <b>{cat}</b>"
-        items = []
-        for p in por_categoria[cat]:
-            items.append(f"  {p['nombre']}  <b>Bs {p['hoy']:.2f}</b>  <i>(antes Bs {p['ayer']:.2f}, {p['cambio_pct']:+.0f}%)</i>")
-        bloques.append(header + "\n" + "\n".join(items))
+    total_productos = len(bajas)
 
+    bloques = format_bloques(por_categoria)
     encabezado = f"📉 <b>Bajas de precio · Cochabamba · {today}</b>"
-    pie = f"\n<i>{len(bajas)} producto{'s' if len(bajas) != 1 else ''} bajaron · HiperMaxi</i>"
+    pie = f"\n<i>{total_productos} producto{'s' if total_productos != 1 else ''} bajaron · HiperMaxi</i>"
     mensaje = encabezado + "\n\n" + "\n\n".join(bloques) + pie
 
-    # Límite de Telegram: 4096 caracteres
-    if len(mensaje) > 4000:
-        bloques_recortados = []
-        total = len(encabezado) + len(pie) + 10
-        for bloque in bloques:
-            if total + len(bloque) > 4000:
-                break
-            bloques_recortados.append(bloque)
-            total += len(bloque) + 2
-        mensaje = encabezado + "\n\n" + "\n\n".join(bloques_recortados) + pie
+    # 6. Enviar — si cabe en un mensaje, mandarlo directo
+    if len(mensaje) <= 4000:
+        print(f"Enviando mensaje con {total_productos} productos en {len(por_categoria)} categorías...")
+        send_telegram(token, chat_id, mensaje)
+        print("Mensaje enviado correctamente.")
+        return
 
-    # 6. Enviar
-    print(f"Enviando mensaje con {len(bajas)} productos en {len(por_categoria)} categorías...")
-    send_telegram(token, chat_id, mensaje)
-    print("Mensaje enviado correctamente.")
+    # Demasiados productos: filtrar a >30% de descuento por categoría
+    UMBRAL_DESCUENTO = -30
+    por_categoria_filtrada = defaultdict(list)
+    for cat, productos in por_categoria.items():
+        filtrados = [p for p in productos if p["cambio_pct"] <= UMBRAL_DESCUENTO]
+        if filtrados:
+            por_categoria_filtrada[cat] = filtrados
+
+    filtrados_count = sum(len(v) for v in por_categoria_filtrada.values())
+
+    if not por_categoria_filtrada:
+        mensaje = (
+            encabezado
+            + f"\n\n<i>{total_productos} productos bajaron de precio, pero ninguno supera el 30% de descuento.</i>"
+        )
+        send_telegram(token, chat_id, mensaje)
+        print("Ningún producto supera el 30% de descuento.")
+        return
+
+    encabezado_filtrado = (
+        encabezado
+        + f"\n<i>🔥 {filtrados_count} con más de 30% de descuento (de {total_productos} en total)</i>"
+    )
+    bloques = format_bloques(por_categoria_filtrada)
+    mensajes = split_messages(encabezado_filtrado, bloques, pie)
+
+    print(f"Enviando {len(mensajes)} mensaje(s) con {filtrados_count} productos filtrados (>30% desc)...")
+    for msg in mensajes:
+        send_telegram(token, chat_id, msg)
+    print("Mensajes enviados correctamente.")
 
 
 if __name__ == "__main__":
